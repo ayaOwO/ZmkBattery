@@ -11,7 +11,7 @@ PluginSettings {
     pluginId: "zmkBattery"
 
     readonly property string discoverCommand: "bluetoothctl devices"
-    readonly property string zmkBatteryGuideUrl: "https://zmk.dev/docs/config/battery"
+    readonly property string zmkBatteryGuideUrl: "https://v0-3-branch.zmk.dev/docs/config/battery"
     readonly property string scriptPath: PluginService.pluginDirectory + "/ZmkBattery/getBattery.sh"
     property bool discoverCommandCopied: false
     property string keyboardName: String(loadValue("keyboardName", "Corne-ish Zen"))
