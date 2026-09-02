@@ -47,8 +47,8 @@ device_path=$(
                 path: .key,
                 connected: (.value["org.bluez.Device1"].Connected.data? // false)
             }
+            | select(.connected)
         ]
-        | sort_by(.connected)
         | last
         | .path // empty
     ' <<< "$objects"

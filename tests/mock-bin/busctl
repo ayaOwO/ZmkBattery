@@ -27,6 +27,11 @@ if [[ $interface == org.freedesktop.DBus.ObjectManager ]]; then
         exit
     fi
 
+    if [[ $scenario == disconnected ]]; then
+        printf '%s\n' '{"data":[{"/org/bluez/hci0/dev_TEST":{"org.bluez.Device1":{"Alias":{"data":"Test Board"},"Name":{"data":"Test Board"},"Connected":{"data":false}}},"/org/bluez/hci0/dev_TEST/service001/char001":{"org.bluez.GattCharacteristic1":{"UUID":{"data":"00002a19-0000-1000-8000-00805f9b34fb"}}}}]}'
+        exit
+    fi
+
     if [[ $scenario == central_only ]]; then
         printf '%s\n' '{"data":[{"/org/bluez/hci0/dev_TEST":{"org.bluez.Device1":{"Alias":{"data":"Test Board"},"Name":{"data":"Test Board"},"Connected":{"data":true}}},"/org/bluez/hci0/dev_TEST/service001/char001":{"org.bluez.GattCharacteristic1":{"UUID":{"data":"00002a19-0000-1000-8000-00805f9b34fb"}}}}]}'
         exit
