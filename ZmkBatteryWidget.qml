@@ -38,6 +38,11 @@ PluginComponent {
     property string scriptPath: pluginService ? pluginService.getPluginPath(pluginId) + "/getBattery.sh" : ""
 
     readonly property bool hasBattery: batteries.length > 0
+    visible: hasBattery
+
+    onHasBatteryChanged: root.setVisibilityOverride(hasBattery)
+    Component.onCompleted: root.setVisibilityOverride(hasBattery)
+
     readonly property int lowestLevel: {
         var lowest = 101;
         for (var i = 0; i < batteries.length; i++) {
