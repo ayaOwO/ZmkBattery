@@ -8,9 +8,25 @@ import qs.Widgets
 PluginComponent {
     id: root
 
+    function normalizeNumericSetting(value, defaultValue, minimum, maximum) {
+        if (value === undefined || value === null
+                || (typeof value === "string" && value.trim() === "")
+                || (typeof value !== "number" && typeof value !== "string")) {
+            return defaultValue;
+        }
+
+        var numericValue = Number(value);
+        if (!isFinite(numericValue))
+            return defaultValue;
+
+        numericValue = Math.round(numericValue);
+        numericValue = Math.max(minimum, numericValue);
+        return maximum === undefined ? numericValue : Math.min(maximum, numericValue);
+    }
+
     property string keyboardName: pluginData.keyboardName || "Corne-ish Zen"
-    property int refreshSeconds: Math.max(10, Number(pluginData.refreshInterval || 60))
-    property int warningThreshold: Math.max(1, Math.min(99, Number(pluginData.warningThreshold || 20)))
+    property int refreshSeconds: normalizeNumericSetting(pluginData.refreshInterval, 60, 10)
+    property int warningThreshold: normalizeNumericSetting(pluginData.warningThreshold, 20, 1, 99)
     property var labelOverrides: parseLabelOverrides(pluginData.batteryLabels)
 
     property var batteries: []
@@ -19,7 +35,7 @@ PluginComponent {
     property string outputBuffer: ""
     property string lastUpdated: ""
     property string errorText: ""
-    property string scriptPath: PluginService.pluginDirectory + "/zmkBattery/getBattery.sh"
+    property string scriptPath: pluginService ? pluginService.getPluginPath(pluginId) + "/getBattery.sh" : ""
 
     readonly property bool hasBattery: batteries.length > 0
     visible: hasBattery
