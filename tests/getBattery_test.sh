@@ -28,6 +28,7 @@ assert_json multi '
 '
 
 assert_json missing 'length == 0'
+assert_json disconnected 'length == 0'
 
 set +e
 bluez_error_output=$(PATH="$mock_path" MOCK_SCENARIO=bluez_error \

@@ -26,9 +26,10 @@ Characteristic User Description descriptors.
    name or alias shown by `bluetoothctl devices`.
 
 The default keyboard name is `Corne-ish Zen`. The widget refreshes every 60
-seconds by default; clicking it refreshes immediately. The settings page
-discovers every exposed battery and lets you rename each one independently.
-Leave a label empty to show only that battery's percentage.
+seconds by default; clicking it refreshes immediately. It stays hidden while
+the keyboard is disconnected and reappears after a successful refresh. The
+settings page discovers every exposed battery and lets you rename each one
+independently. Leave a label empty to show only that battery's percentage.
 
 The settings page includes a copy button for this discovery command:
 
