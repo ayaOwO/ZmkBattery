@@ -2,7 +2,7 @@
   "id": "zmkBattery",
   "name": "ZmkBattery",
   "description": "Shows central and multiple peripheral battery levels for a ZMK split keyboard",
-  "version": "1.3.1",
+  "version": "1.3.2",
   "author": "ayak",
   "license": "MIT",
   "icon": "keyboard",
