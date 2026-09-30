@@ -35,7 +35,7 @@ PluginComponent {
     property string outputBuffer: ""
     property string lastUpdated: ""
     property string errorText: ""
-    property string scriptPath: PluginService.pluginDirectory + "/ZmkBattery/getBattery.sh"
+    property string scriptPath: pluginService ? pluginService.getPluginPath(pluginId) + "/getBattery.sh" : ""
 
     readonly property bool hasBattery: batteries.length > 0
     readonly property int lowestLevel: {
