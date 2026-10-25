@@ -1,8 +1,12 @@
 import QtQuick
-import Quickshell
+import QtQuick.Layouts
+import "batteryOrder.js" as BatteryOrder
+import "batteryData.js" as BatteryData
 import Quickshell.Io
 import qs.Common
 import qs.Modules.Plugins
+import qs.Modules.Settings.Widgets
+import qs.DCommon.Widgets as DCommon
 import qs.Services
 import qs.Widgets
 
@@ -10,32 +14,39 @@ PluginSettings {
     id: root
     pluginId: "zmkBattery"
 
-    readonly property string discoverCommand: "bluetoothctl devices"
     readonly property string zmkBatteryGuideUrl: "https://v0-3-branch.zmk.dev/docs/config/battery"
     readonly property string scriptPath: pluginService ? pluginService.getPluginPath(pluginId) + "/getBattery.sh" : ""
-    property bool discoverCommandCopied: false
     property string keyboardName: String(loadValue("keyboardName", "Corne-ish Zen"))
+    property string selectedWidgetIcon: String(loadValue("widgetIcon",
+        loadValue("showIcon", true) === false ? "" : "keyboard"))
     property var discoveredBatteries: []
-    property var labelOverrides: parseLabelOverrides(loadValue("batteryLabels", "{}"))
+    property var batteryOrder: loadValue("batteryOrder", [])
+    readonly property var orderedBatteries: BatteryOrder.ordered(discoveredBatteries, batteryOrder)
+
+    function saveBatteryOrder(indices) {
+        var next = indices.map(index => orderedBatteries[index].id);
+        // Retain disconnected devices so their preferences survive reconnecting.
+        if (Array.isArray(batteryOrder))
+            next = next.concat(batteryOrder.filter(value => next.indexOf(value) < 0));
+        batteryOrder = next;
+        saveValue("batteryOrder", next);
+    }
+
+    property var hiddenBatteryIds: loadValue("hiddenBatteryIds", [])
+
+    function setBatteryVisible(id, shown) {
+        var next = Array.isArray(hiddenBatteryIds) ? hiddenBatteryIds.filter(value => value !== id) : [];
+        if (!shown)
+            next.push(id);
+        hiddenBatteryIds = next;
+        saveValue("hiddenBatteryIds", next);
+    }
+
+    property var labelOverrides: BatteryData.parseLabelOverrides(loadValue("batteryLabels", "{}"))
     property bool batteryDiscoveryLoading: false
     property bool batteryDiscoveryPending: false
     property string batteryDiscoveryBuffer: ""
     property string batteryDiscoveryError: ""
-
-    function parseLabelOverrides(value) {
-        if (!value)
-            return {};
-
-        try {
-            var parsed = typeof value === "string" ? JSON.parse(value) : value;
-            return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-                ? parsed
-                : {};
-        } catch (error) {
-            console.warn("[zmkBattery] Invalid battery label overrides:", error);
-            return {};
-        }
-    }
 
     function hasOverride(id) {
         return Object.prototype.hasOwnProperty.call(labelOverrides, id);
@@ -44,13 +55,16 @@ PluginSettings {
     function defaultLabel(battery) {
         var legacy;
 
-        if (battery.id === "central") {
+        if (battery.legacyId && hasOverride(battery.legacyId))
+            return String(labelOverrides[battery.legacyId]).trim();
+
+        if ((battery.legacyId || battery.id) === "central") {
             legacy = loadValue("centralLabel", null);
             if (legacy !== null && legacy !== undefined)
                 return String(legacy).trim();
         }
 
-        if (battery.id === "peripheral:0") {
+        if ((battery.legacyId || battery.id) === "peripheral:0") {
             legacy = loadValue("peripheralLabel", null);
             if (legacy !== null && legacy !== undefined)
                 return String(legacy).trim();
@@ -77,60 +91,26 @@ PluginSettings {
     }
 
     function resetBatteryLabel(id) {
-        var next = {};
-        var keys = Object.keys(labelOverrides);
-        for (var i = 0; i < keys.length; i++) {
-            if (keys[i] !== id)
-                next[keys[i]] = labelOverrides[keys[i]];
-        }
-
-        labelOverrides = next;
-        saveValue("batteryLabels", JSON.stringify(next));
+        var battery = discoveredBatteries.find(item => item.id === id);
+        if (battery)
+            saveBatteryLabel(id, battery.name);
     }
 
-    function validLevel(level) {
-        return typeof level === "number"
-            && isFinite(level)
-            && Math.floor(level) === level
-            && level >= 0
-            && level <= 100;
-    }
-
-    function parseBatteryOutput(output) {
-        var parsed;
-
-        try {
-            parsed = JSON.parse(output);
-        } catch (error) {
-            return null;
-        }
-
-        if (!Array.isArray(parsed))
-            return null;
-
-        var normalized = [];
-        var seenIds = {};
-        for (var i = 0; i < parsed.length; i++) {
-            var item = parsed[i];
-            if (!item || typeof item.id !== "string" || !item.id.length
-                    || typeof item.name !== "string" || !item.name.length
-                    || Object.prototype.hasOwnProperty.call(seenIds, item.id)
-                    || (item.level !== null && !validLevel(item.level))) {
-                return null;
-            }
-
-            seenIds[item.id] = true;
-            normalized.push({
-                id: item.id,
-                name: item.name,
-                level: item.level
-            });
-        }
-
-        return normalized;
+    function testLowBatteryNotification() {
+        Proc.runCommand("zmkBattery.testNotification", [
+            "dms", "notify", "-a", "ZmkBattery", "-i", "battery-low",
+            "-u", "normal", "-t", "8000", "Low battery (test)",
+            "Example device: 15% remaining. This is a test notification."
+        ], (stdout, exitCode) => {
+            if (exitCode !== 0)
+                ToastService.showError("Could not send the test notification");
+        });
     }
 
     function discoverBatteries() {
+        if (!scriptPath)
+            return;
+
         if (batteryDiscoveryProcess.running) {
             batteryDiscoveryPending = true;
             return;
@@ -140,12 +120,6 @@ PluginSettings {
         batteryDiscoveryError = "";
         batteryDiscoveryLoading = true;
         batteryDiscoveryProcess.running = true;
-    }
-
-    Timer {
-        id: copiedReset
-        interval: 1600
-        onTriggered: root.discoverCommandCopied = false
     }
 
     Process {
@@ -167,7 +141,7 @@ PluginSettings {
 
         onExited: (exitCode, exitStatus) => {
             var parsed = exitCode === 0
-                ? root.parseBatteryOutput(root.batteryDiscoveryBuffer.trim())
+                ? BatteryData.parseBatteryOutput(root.batteryDiscoveryBuffer.trim())
                 : null;
 
             root.batteryDiscoveryLoading = false;
@@ -177,7 +151,7 @@ PluginSettings {
             } else {
                 root.discoveredBatteries = parsed;
                 if (parsed.length === 0)
-                    root.batteryDiscoveryError = "Connect the keyboard to discover its batteries";
+                    root.batteryDiscoveryError = "Connect a device with a supported battery service to discover batteries";
             }
 
             if (root.batteryDiscoveryPending) {
@@ -196,303 +170,221 @@ PluginSettings {
             if (!root.pluginService)
                 return;
 
+            root.batteryOrder = root.loadValue("batteryOrder", []);
+            root.hiddenBatteryIds = root.loadValue("hiddenBatteryIds", []);
             root.keyboardName = String(root.loadValue("keyboardName", "Corne-ish Zen"));
-            root.labelOverrides = root.parseLabelOverrides(root.loadValue("batteryLabels", "{}"));
+            root.labelOverrides = BatteryData.parseLabelOverrides(root.loadValue("batteryLabels", "{}"));
             Qt.callLater(root.discoverBatteries);
         }
     }
 
-    StyledText {
+    DCommon.DCollapsibleSection {
         width: parent.width
-        text: "ZmkBattery"
-        font.pixelSize: Theme.fontSizeLarge
-        font.weight: Font.Bold
-        color: Theme.surfaceText
-    }
+        title: "Setup and requirements"
+        expanded: false
 
-    StyledText {
-        width: parent.width
-        text: "Displays the central battery and every ZMK peripheral battery proxy. Click the bar widget to refresh immediately."
-        font.pixelSize: Theme.fontSizeSmall
-        color: Theme.surfaceVariantText
-        wrapMode: Text.WordWrap
-    }
-
-    StyledText {
-        width: parent.width
-        text: "GATT setup required"
-        font.pixelSize: Theme.fontSizeLarge
-        font.weight: Font.Medium
-        color: Theme.surfaceText
-    }
-
-    StyledText {
-        width: parent.width
-        textFormat: Text.RichText
-        text: "The keyboard must be connected with its GATT services resolved. To expose peripheral batteries, enable peripheral battery fetching and proxying in ZMK. <a href=\"" + root.zmkBatteryGuideUrl + "\">Open the ZMK battery configuration guide</a>."
-        linkColor: Theme.primary
-        font.pixelSize: Theme.fontSizeSmall
-        color: Theme.surfaceVariantText
-        wrapMode: Text.WordWrap
-        onLinkActivated: link => Qt.openUrlExternally(link)
-    }
-
-    StyledText {
-        width: parent.width
-        text: "Keyboard name"
-        font.pixelSize: Theme.fontSizeSmall
-        font.weight: Font.Medium
-        color: Theme.surfaceText
-    }
-
-    StyledText {
-        width: parent.width
-        text: "Exact Bluetooth name or alias shown by bluetoothctl"
-        font.pixelSize: Theme.fontSizeSmall
-        color: Theme.surfaceVariantText
-        wrapMode: Text.WordWrap
-    }
-
-    Row {
-        width: parent.width
-        spacing: Theme.spacingS
-
-        DankTextField {
-            id: keyboardNameField
-            width: parent.width - refreshBatteriesButton.width - parent.spacing
-            text: root.keyboardName
-            placeholderText: "Corne-ish Zen"
-            leftIconName: "keyboard"
-            onEditingFinished: {
-                var nextName = text.trim() || "Corne-ish Zen";
-                text = nextName;
-                root.keyboardName = nextName;
-                root.saveValue("keyboardName", nextName);
-                root.discoverBatteries();
-            }
+        SettingsLinkRow {
+            Layout.fillWidth: true
+            title: "ZMK battery setup"
+            subtitle: "Enable peripheral battery fetching and proxying to see both keyboard halves."
+            url: root.zmkBatteryGuideUrl
         }
 
-        DankActionButton {
-            id: refreshBatteriesButton
-            anchors.verticalCenter: parent.verticalCenter
-            buttonSize: 36
-            iconName: root.batteryDiscoveryLoading ? "sync" : "refresh"
-            iconColor: Theme.surfaceVariantText
-            backgroundColor: "transparent"
-            tooltipText: "Discover batteries"
-            enabled: !root.batteryDiscoveryLoading
-            onClicked: root.discoverBatteries()
+        SettingsNoteRow {
+            Layout.fillWidth: true
+            noteIconName: "info"
+            tint: Theme.primary
+            tintBackground: Theme.surfaceContainerHigh
+            text: "Batteries are discovered automatically for connected Bluetooth devices, including ZMK keyboards (follow the setup above to show both halves). USB battery levels are read through Linux or the built-in Keychron reader.\n\nRequires bash, busctl, and jq, plus python3 for USB support. The Keychron reader also requires access to the receiver’s HID device."
         }
     }
 
-    Rectangle {
-        width: parent.width
-        height: 1
-        color: Theme.outline
-        opacity: 0.3
-    }
+    SettingsSectionLabel { text: "Devices and battery labels" }
 
     StyledText {
         width: parent.width
-        text: "Battery labels"
-        font.pixelSize: Theme.fontSizeLarge
-        font.weight: Font.Medium
-        color: Theme.surfaceText
-    }
-
-    StyledText {
-        width: parent.width
-        text: "Rename each discovered battery. An empty label shows only its percentage."
+        text: "Drag to reorder, edit labels, or hide batteries. Leave a label empty to show only the percentage."
         font.pixelSize: Theme.fontSizeSmall
         color: Theme.surfaceVariantText
         wrapMode: Text.WordWrap
     }
 
-    StyledText {
+    SettingsSectionLabel {
         visible: root.batteryDiscoveryLoading
-        width: parent.width
         text: "Discovering batteries…"
-        font.pixelSize: Theme.fontSizeSmall
-        color: Theme.surfaceVariantText
     }
 
-    StyledText {
+    SettingsNoteRow {
         visible: !root.batteryDiscoveryLoading && root.batteryDiscoveryError.length > 0
-        width: parent.width
         text: root.batteryDiscoveryError
-        font.pixelSize: Theme.fontSizeSmall
-        color: Theme.warning
-        wrapMode: Text.WordWrap
+        noteIconName: "info"
     }
 
-    Column {
+    SettingsReorderList {
+        id: batteryList
         visible: !root.batteryDiscoveryLoading && root.discoveredBatteries.length > 0
         width: parent.width
-        spacing: Theme.spacingS
+        model: root.orderedBatteries
+        onReordered: indices => root.saveBatteryOrder(indices)
 
-        Repeater {
-            model: root.discoveredBatteries
+        delegate: SettingsReorderRow {
+            id: batteryRow
+            required property var modelData
+            reorderList: batteryList
+            title: modelData.name
+            singleLineTitle: true
+            reorderEnabled: batteryList.count > 1
+            modified: Array.isArray(root.hiddenBatteryIds) && root.hiddenBatteryIds.indexOf(modelData.id) >= 0
+            resetByKeys: false
+            onResetRequested: root.setBatteryVisible(modelData.id, true)
 
-            Column {
-                required property var modelData
-                width: parent.width
-                spacing: Theme.spacingXS
+            DCommon.DTooltipV2 { id: deviceTooltip }
+            HoverHandler {
+                onHoveredChanged: {
+                    if (hovered)
+                        deviceTooltip.show(batteryRow.modelData.name + "\n" + batteryRow.modelData.id, batteryRow, 0, 0);
+                    else
+                        deviceTooltip.hide();
+                }
+            }
 
-                StyledText {
-                    width: parent.width
-                    text: modelData.name
-                    font.pixelSize: Theme.fontSizeSmall
-                    font.weight: Font.Medium
-                    color: Theme.surfaceText
+            SettingsTextFieldRow {
+                id: batteryLabelField
+                width: Math.min(batteryRow.width * 0.45,
+                    Math.max(Theme.iconButtonSize * 3,
+                        labelMetrics.advanceWidth + Theme.iconButtonSize * 2 + Theme.spacingL * 2))
+                anchors.verticalCenter: parent.verticalCenter
+                paddingH: 0
+                paddingV: 0
+                paintBackground: false
+                text: "Label"
+                value: root.resolvedLabel(batteryRow.modelData)
+                leftIconName: "label"
+                modified: root.resolvedLabel(batteryRow.modelData) !== batteryRow.modelData.name
+                resetKeys: []
+                onResetRequested: {
+                    batteryLabelField.value = batteryRow.modelData.name;
+                    root.resetBatteryLabel(batteryRow.modelData.id);
+                }
+                onEditingFinished: value => root.saveBatteryLabel(batteryRow.modelData.id, value)
+
+                TextMetrics {
+                    id: labelMetrics
+                    font.family: Theme.fontFamily
+                    font.pixelSize: Theme.fontSizeMedium
+                    text: batteryLabelField.value || batteryLabelField.text
                 }
 
-                Row {
-                    width: parent.width
-                    spacing: Theme.spacingS
-
-                    DankTextField {
-                        id: batteryLabelField
-                        width: parent.width - resetLabelButton.width - parent.spacing
-                        text: root.resolvedLabel(modelData)
-                        placeholderText: modelData.name
-                        leftIconName: "label"
-                        onEditingFinished: root.saveBatteryLabel(modelData.id, text)
-
-                        Connections {
-                            target: root
-
-                            function onLabelOverridesChanged() {
-                                if (!batteryLabelField.getActiveFocus())
-                                    batteryLabelField.text = root.resolvedLabel(modelData);
-                            }
-                        }
-                    }
-
-                    DankActionButton {
-                        id: resetLabelButton
-                        anchors.verticalCenter: parent.verticalCenter
-                        buttonSize: 36
-                        iconName: "restart_alt"
-                        iconColor: Theme.surfaceVariantText
-                        backgroundColor: "transparent"
-                        tooltipText: "Reset label"
-                        enabled: root.hasOverride(modelData.id)
-                        onClicked: root.resetBatteryLabel(modelData.id)
+                Connections {
+                    target: root
+                    function onLabelOverridesChanged() {
+                        if (!batteryLabelField.focusWithin)
+                            batteryLabelField.value = root.resolvedLabel(batteryRow.modelData);
                     }
                 }
+            }
+
+            DCommon.DToggle {
+                anchors.verticalCenter: parent.verticalCenter
+                text: "Show " + batteryRow.modelData.name + " in widget"
+                hideText: true
+                checked: !Array.isArray(root.hiddenBatteryIds) || root.hiddenBatteryIds.indexOf(batteryRow.modelData.id) < 0
+                onToggled: checked => root.setBatteryVisible(batteryRow.modelData.id, checked)
             }
         }
     }
 
-    Rectangle {
-        width: parent.width
-        height: 1
-        color: Theme.outline
-        opacity: 0.3
-    }
+    SettingsSectionLabel { text: "Display" }
 
-    StyledText {
-        width: parent.width
-        text: "Find your keyboard name"
-        font.pixelSize: Theme.fontSizeLarge
-        font.weight: Font.Medium
-        color: Theme.surfaceText
-    }
-
-    StyledText {
-        width: parent.width
-        text: "Copy and paste this command into a terminal, then copy the name shown after your keyboard's Bluetooth address into the Keyboard name field above."
-        font.pixelSize: Theme.fontSizeSmall
-        color: Theme.surfaceVariantText
-        wrapMode: Text.WordWrap
-    }
-
-    StyledRect {
-        width: parent.width
-        radius: Theme.cornerRadius
-        color: Theme.surfaceContainerHigh
-        implicitHeight: Math.max(discoverCommandText.implicitHeight, copyDiscoverCommandButton.height) + Theme.spacingS * 2
-
-        StyledText {
-            id: discoverCommandText
-            anchors.left: parent.left
-            anchors.right: copyDiscoverCommandButton.left
-            anchors.verticalCenter: parent.verticalCenter
-            anchors.leftMargin: Theme.spacingS
-            anchors.rightMargin: Theme.spacingXS
-            text: root.discoverCommand
-            wrapMode: Text.WrapAnywhere
-            color: Theme.primary
-            font.pixelSize: Theme.fontSizeSmall - 1
-            font.family: "monospace"
+    SettingsGroup {
+        SettingsToggleRow {
+            text: "Hide % symbol"
+            description: "Keep battery values visible without the percent sign"
+            checked: root.loadValue("hidePercentages", false) === true
+            modified: checked
+            resetByKeys: false
+            onResetRequested: root.saveValue("hidePercentages", false)
+            onToggled: checked => root.saveValue("hidePercentages", checked)
         }
 
-        DankActionButton {
-            id: copyDiscoverCommandButton
-            anchors.right: parent.right
-            anchors.rightMargin: Theme.spacingXS
-            anchors.verticalCenter: parent.verticalCenter
-            buttonSize: 28
-            iconName: root.discoverCommandCopied ? "check" : "content_copy"
-            iconColor: root.discoverCommandCopied ? Theme.success : Theme.surfaceVariantText
-            backgroundColor: "transparent"
-            tooltipText: root.discoverCommandCopied ? "Command copied" : "Copy command"
-            onClicked: {
-                Quickshell.execDetached([
-                    "sh",
-                    "-c",
-                    "printf %s \"$1\" | wl-copy",
-                    "_",
-                    root.discoverCommand
-                ]);
-                root.discoverCommandCopied = true;
-                copiedReset.restart();
+        SettingsTextFieldRow {
+            id: separatorField
+            text: "Separator"
+            description: "Between readings on horizontal bars. Leave empty for no separator."
+            value: String(root.loadValue("separator", "·"))
+            placeholderText: "None"
+            modified: value !== "·"
+            resetKeys: []
+            onResetRequested: {
+                separatorField.value = "·";
+                root.saveValue("separator", "·");
+            }
+            onEditingFinished: value => root.saveValue("separator", value)
+        }
+
+        SettingsRow {
+            title: "Widget icon"
+            resetKeys: []
+            resetByKeys: false
+            modified: root.selectedWidgetIcon !== "keyboard"
+            onResetRequested: root.saveValue("widgetIcon", "keyboard")
+
+            DCommon.DIconPicker {
+                anchors.verticalCenter: parent.verticalCenter
+                width: Math.min(240, batteryList.width * 0.45)
+                currentIcon: root.selectedWidgetIcon
+                onIconSelected: (iconName, iconType) => root.saveValue("widgetIcon", iconName)
+            }
+
+            DCommon.DActionButton {
+                buttonSize: Theme.iconButtonSize
+                iconName: "close"
+                Accessible.name: "Clear icon"
+                tooltipText: "Clear icon"
+                iconSize: Theme.iconSizeMedium
+                iconColor: Theme.error
+                anchors.verticalCenter: parent.verticalCenter
+                enabled: root.selectedWidgetIcon.length > 0
+                onClicked: root.saveValue("widgetIcon", "")
             }
         }
-    }
 
-    SliderSetting {
-        settingKey: "refreshInterval"
-        label: "Refresh interval"
-        description: "How often to query every keyboard battery"
-        defaultValue: 60
-        minimum: 10
-        maximum: 600
-        unit: "sec"
-        leftIcon: "schedule"
-    }
+        SettingsSliderRow {
+            text: "Refresh interval"
+            modified: value !== 60
+            resetByKeys: false
+            onResetRequested: root.saveValue("refreshInterval", 60)
+            description: "How often to query every battery"
+            value: Number(root.loadValue("refreshInterval", 60))
+            minimum: 10
+            maximum: 600
+            step: 1
+            unit: "sec"
+            onSliderValueChanged: newValue => root.saveValue("refreshInterval", newValue)
+        }
 
-    SliderSetting {
-        settingKey: "warningThreshold"
-        label: "Low battery warning"
-        description: "Use the warning color at or below this percentage"
-        defaultValue: 20
-        minimum: 5
-        maximum: 50
-        unit: "%"
-        leftIcon: "battery_alert"
-    }
-
-    Rectangle {
-        width: parent.width
-        height: 1
-        color: Theme.outline
-        opacity: 0.3
-    }
-
-    StyledText {
-        width: parent.width
-        text: "Requirements"
-        font.pixelSize: Theme.fontSizeLarge
-        font.weight: Font.Medium
-        color: Theme.surfaceText
-    }
-
-    StyledText {
-        width: parent.width
-        text: "The plugin uses BlueZ through busctl and requires bash and jq."
-        font.pixelSize: Theme.fontSizeSmall
-        color: Theme.surfaceVariantText
-        wrapMode: Text.WordWrap
+        SettingsSliderRow {
+            text: "Low battery warning"
+            modified: value !== 20
+            resetByKeys: false
+            onResetRequested: root.saveValue("warningThreshold", 20)
+            description: "Use the warning color at or below this percentage"
+            value: Number(root.loadValue("warningThreshold", 20))
+            minimum: 5
+            maximum: 50
+            step: 1
+            unit: "%"
+            onSliderValueChanged: newValue => root.saveValue("warningThreshold", newValue)
+        }
+        SettingsRow {
+            title: "Test low battery notification"
+            subtitle: "Send a sample notification without changing battery levels"
+            DCommon.DButton {
+                text: "Test"
+                iconName: "notifications_active"
+                anchors.verticalCenter: parent.verticalCenter
+                onClicked: root.testLowBatteryNotification()
+            }
+        }
     }
 }
