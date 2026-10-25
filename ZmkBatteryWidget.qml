@@ -1,4 +1,6 @@
 import QtQuick
+import "batteryOrder.js" as BatteryOrder
+import "batteryData.js" as BatteryData
 import Quickshell.Io
 import qs.Common
 import qs.Modules.Plugins
@@ -24,12 +26,28 @@ PluginComponent {
         return maximum === undefined ? numericValue : Math.min(maximum, numericValue);
     }
 
+    property bool hidePercentages: pluginData.hidePercentages === true
+    property string separator: typeof pluginData.separator === "string" ? pluginData.separator : "·"
+    property string widgetIcon: typeof pluginData.widgetIcon === "string"
+        ? pluginData.widgetIcon.trim() : (pluginData.showIcon === false ? "" : "keyboard")
+    readonly property bool showIcon: widgetIcon.length > 0
     property string keyboardName: pluginData.keyboardName || "Corne-ish Zen"
     property int refreshSeconds: normalizeNumericSetting(pluginData.refreshInterval, 60, 10)
     property int warningThreshold: normalizeNumericSetting(pluginData.warningThreshold, 20, 1, 99)
-    property var labelOverrides: parseLabelOverrides(pluginData.batteryLabels)
+    property var labelOverrides: BatteryData.parseLabelOverrides(pluginData.batteryLabels)
 
-    property var batteries: []
+    property var allBatteries: []
+    property var hiddenBatteryIds: {
+        try {
+            var value = pluginData.hiddenBatteryIds || [];
+            return typeof value === "string" ? JSON.parse(value) : value;
+        } catch (error) {
+            return [];
+        }
+    }
+    readonly property var orderedBatteries: BatteryOrder.ordered(allBatteries, pluginData.batteryOrder)
+    readonly property var batteries: orderedBatteries.filter(battery =>
+        battery.supported && (!Array.isArray(hiddenBatteryIds) || hiddenBatteryIds.indexOf(battery.id) < 0))
     property bool isLoading: true
     property bool parsedOutput: false
     property string outputBuffer: ""
@@ -47,7 +65,7 @@ PluginComponent {
         var lowest = 101;
         for (var i = 0; i < batteries.length; i++) {
             var level = batteries[i].level;
-            if (root.validLevel(level))
+            if (BatteryData.validLevel(level))
                 lowest = Math.min(lowest, level);
         }
         return lowest <= 100 ? lowest : -1;
@@ -55,21 +73,6 @@ PluginComponent {
     readonly property color statusColor: batteryColor(lowestLevel)
 
     pillClickAction: () => refreshBattery()
-
-    function parseLabelOverrides(value) {
-        if (!value)
-            return {};
-
-        try {
-            var parsed = typeof value === "string" ? JSON.parse(value) : value;
-            return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-                ? parsed
-                : {};
-        } catch (error) {
-            console.warn("[zmkBattery] Invalid battery label overrides:", error);
-            return {};
-        }
-    }
 
     function hasOverride(id) {
         return Object.prototype.hasOwnProperty.call(labelOverrides, id);
@@ -79,29 +82,24 @@ PluginComponent {
         if (hasOverride(battery.id))
             return String(labelOverrides[battery.id]).trim();
 
-        if (battery.id === "central" && pluginData.centralLabel !== undefined)
+        if (battery.legacyId && hasOverride(battery.legacyId))
+            return String(labelOverrides[battery.legacyId]).trim();
+
+        if ((battery.legacyId || battery.id) === "central" && pluginData.centralLabel !== undefined)
             return String(pluginData.centralLabel).trim();
 
-        if (battery.id === "peripheral:0" && pluginData.peripheralLabel !== undefined)
+        if ((battery.legacyId || battery.id) === "peripheral:0" && pluginData.peripheralLabel !== undefined)
             return String(pluginData.peripheralLabel).trim();
 
         return String(battery.name || battery.id).trim();
     }
 
-    function validLevel(level) {
-        return typeof level === "number"
-            && isFinite(level)
-            && Math.floor(level) === level
-            && level >= 0
-            && level <= 100;
-    }
-
     function levelText(level) {
-        return validLevel(level) ? level + "%" : "--%";
+        return (BatteryData.validLevel(level) ? String(level) : "--") + (hidePercentages ? "" : "%");
     }
 
     function batteryColor(level) {
-        if (!validLevel(level))
+        if (!BatteryData.validLevel(level))
             return Theme.surfaceVariantText;
         if (level <= 10)
             return Theme.error;
@@ -111,43 +109,18 @@ PluginComponent {
     }
 
     function parseOutput(output) {
-        var parsed;
-
-        try {
-            parsed = JSON.parse(output);
-        } catch (error) {
-            console.warn("[zmkBattery] Invalid battery JSON:", error);
-            return false;
-        }
-
-        if (!Array.isArray(parsed))
+        var parsed = BatteryData.parseBatteryOutput(output);
+        if (parsed === null)
             return false;
 
-        var normalized = [];
-        var seenIds = {};
-
-        for (var i = 0; i < parsed.length; i++) {
-            var item = parsed[i];
-            if (!item || typeof item.id !== "string" || !item.id.length
-                    || typeof item.name !== "string" || !item.name.length
-                    || Object.prototype.hasOwnProperty.call(seenIds, item.id)
-                    || (item.level !== null && !validLevel(item.level))) {
-                return false;
-            }
-
-            seenIds[item.id] = true;
-            normalized.push({
-                id: item.id,
-                name: item.name,
-                level: item.level
-            });
-        }
-
-        batteries = normalized;
+        allBatteries = parsed;
         return true;
     }
 
     function refreshBattery() {
+        if (!scriptPath)
+            return;
+
         if (batteryProcess.running)
             return;
 
@@ -180,13 +153,13 @@ PluginComponent {
             root.parsedOutput = exitCode === 0 && root.parseOutput(root.outputBuffer.trim());
 
             if (!root.parsedOutput) {
-                root.batteries = [];
+                root.allBatteries = [];
                 root.errorText = "Battery query failed";
                 return;
             }
 
             if (!root.hasBattery)
-                root.errorText = "Keyboard disconnected or battery services unavailable";
+                root.errorText = "Devices disconnected or battery services unavailable";
 
             root.lastUpdated = new Date().toLocaleTimeString(Qt.locale(), Locale.ShortFormat);
         }
@@ -225,7 +198,8 @@ PluginComponent {
             spacing: Theme.spacingS
 
             DankIcon {
-                name: root.isLoading ? "sync" : (root.hasBattery ? "keyboard" : "keyboard_off")
+                visible: root.showIcon
+                name: root.isLoading ? "sync" : (root.hasBattery ? root.widgetIcon : "keyboard_off")
                 size: root.iconSize
                 color: root.isLoading ? Theme.surfaceVariantText : root.statusColor
                 anchors.verticalCenter: parent.verticalCenter
@@ -237,7 +211,7 @@ PluginComponent {
 
                 StyledText {
                     visible: root.batteries.length === 0
-                    text: root.isLoading ? "…" : "--%"
+                    text: root.isLoading ? "…" : root.levelText(null)
                     font.pixelSize: Theme.fontSizeSmall
                     font.weight: Font.DemiBold
                     color: Theme.surfaceVariantText
@@ -255,8 +229,8 @@ PluginComponent {
                         anchors.verticalCenter: parent.verticalCenter
 
                         StyledText {
-                            visible: index > 0
-                            text: "·"
+                            visible: index > 0 && root.separator.length > 0
+                            text: root.separator
                             font.pixelSize: Theme.fontSizeSmall
                             color: Theme.outline
                             anchors.verticalCenter: parent.verticalCenter
@@ -288,7 +262,8 @@ PluginComponent {
             spacing: Theme.spacingXS
 
             DankIcon {
-                name: root.isLoading ? "sync" : (root.hasBattery ? "keyboard" : "keyboard_off")
+                visible: root.showIcon
+                name: root.isLoading ? "sync" : (root.hasBattery ? root.widgetIcon : "keyboard_off")
                 size: root.iconSize
                 color: root.isLoading ? Theme.surfaceVariantText : root.statusColor
                 anchors.horizontalCenter: parent.horizontalCenter
@@ -300,7 +275,7 @@ PluginComponent {
 
                 StyledText {
                     visible: root.batteries.length === 0
-                    text: root.isLoading ? "…" : "--%"
+                    text: root.isLoading ? "…" : root.levelText(null)
                     font.pixelSize: Math.max(8, Math.round(Theme.fontSizeSmall * 0.8))
                     font.weight: Font.DemiBold
                     color: Theme.surfaceVariantText
@@ -313,8 +288,7 @@ PluginComponent {
                     StyledText {
                         required property var modelData
                         readonly property string displayLabel: root.batteryLabel(modelData)
-                        text: (displayLabel.length > 0 ? displayLabel + " " : "")
-                            + root.levelText(modelData.level)
+                        text: (displayLabel.length > 0 ? displayLabel + " " : "") + root.levelText(modelData.level)
                         font.pixelSize: Math.max(8, Math.round(Theme.fontSizeSmall * 0.8))
                         font.weight: Font.DemiBold
                         color: root.batteryColor(modelData.level)

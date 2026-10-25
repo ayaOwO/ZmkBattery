@@ -22,6 +22,16 @@ if [[ $interface == org.freedesktop.DBus.ObjectManager ]]; then
         exit 1
     fi
 
+    if [[ $scenario == battery1 || $scenario == battery1_invalid ]]; then
+        level=100
+        [[ $scenario == battery1_invalid ]] && level=101
+        jq -cn --argjson level "$level" '{data: [{"/org/bluez/hci0/dev_BUDS": {
+            "org.bluez.Device1": {Name: {data: "Galaxy Buds"}, Connected: {data: true}},
+            "org.bluez.Battery1": {Percentage: {data: $level}}
+        }}]}'
+        exit
+    fi
+
     if [[ $scenario == missing ]]; then
         printf '%s\n' '{"data":[{"/org/bluez/hci0/dev_MISSING":{"org.bluez.Device1":{"Alias":{"data":"Another Board"},"Name":{"data":"Another Board"},"Connected":{"data":false}}}}]}'
         exit
@@ -37,7 +47,10 @@ if [[ $interface == org.freedesktop.DBus.ObjectManager ]]; then
         exit
     fi
 
-    printf '%s\n' '{"data":[{"/org/bluez/hci0/dev_TEST":{"org.bluez.Device1":{"Alias":{"data":"Test Board"},"Name":{"data":"Test Board"},"Connected":{"data":true}}},"/org/bluez/hci0/dev_TEST/service001/char001":{"org.bluez.GattCharacteristic1":{"UUID":{"data":"00002a19-0000-1000-8000-00805f9b34fb"}}},"/org/bluez/hci0/dev_TEST/service002/char002":{"org.bluez.GattCharacteristic1":{"UUID":{"data":"00002a19-0000-1000-8000-00805f9b34fb"}}},"/org/bluez/hci0/dev_TEST/service002/char002/desc001":{"org.bluez.GattDescriptor1":{"UUID":{"data":"00002901-0000-1000-8000-00805f9b34fb"},"Characteristic":{"data":"/org/bluez/hci0/dev_TEST/service002/char002"}}},"/org/bluez/hci0/dev_TEST/service003/char003":{"org.bluez.GattCharacteristic1":{"UUID":{"data":"00002a19-0000-1000-8000-00805f9b34fb"}}},"/org/bluez/hci0/dev_TEST/service003/char003/desc001":{"org.bluez.GattDescriptor1":{"UUID":{"data":"00002901-0000-1000-8000-00805f9b34fb"},"Characteristic":{"data":"/org/bluez/hci0/dev_TEST/service003/char003"}}},"/org/bluez/hci0/dev_TEST/service004/char004":{"org.bluez.GattCharacteristic1":{"UUID":{"data":"00002a19-0000-1000-8000-00805f9b34fb"}}},"/org/bluez/hci0/dev_TEST/service004/char004/desc001":{"org.bluez.GattDescriptor1":{"UUID":{"data":"00002901-0000-1000-8000-00805f9b34fb"},"Characteristic":{"data":"/org/bluez/hci0/dev_TEST/service004/char004"}}}}]}'
+    printf '%s\n' '{"data":[{"/org/bluez/hci0/dev_TEST":{"org.bluez.Device1":{"Alias":{"data":"Test Board"},"Name":{"data":"Test Board"},"Connected":{"data":true}}},"/org/bluez/hci0/dev_TEST/service001/char001":{"org.bluez.GattCharacteristic1":{"UUID":{"data":"00002a19-0000-1000-8000-00805f9b34fb"}}},"/org/bluez/hci0/dev_TEST/service002/char002":{"org.bluez.GattCharacteristic1":{"UUID":{"data":"00002a19-0000-1000-8000-00805f9b34fb"}}},"/org/bluez/hci0/dev_TEST/service002/char002/desc001":{"org.bluez.GattDescriptor1":{"UUID":{"data":"00002901-0000-1000-8000-00805f9b34fb"},"Characteristic":{"data":"/org/bluez/hci0/dev_TEST/service002/char002"}}},"/org/bluez/hci0/dev_TEST/service003/char003":{"org.bluez.GattCharacteristic1":{"UUID":{"data":"00002a19-0000-1000-8000-00805f9b34fb"}}},"/org/bluez/hci0/dev_TEST/service003/char003/desc001":{"org.bluez.GattDescriptor1":{"UUID":{"data":"00002901-0000-1000-8000-00805f9b34fb"},"Characteristic":{"data":"/org/bluez/hci0/dev_TEST/service003/char003"}}},"/org/bluez/hci0/dev_TEST/service004/char004":{"org.bluez.GattCharacteristic1":{"UUID":{"data":"00002a19-0000-1000-8000-00805f9b34fb"}}},"/org/bluez/hci0/dev_TEST/service004/char004/desc001":{"org.bluez.GattDescriptor1":{"UUID":{"data":"00002901-0000-1000-8000-00805f9b34fb"},"Characteristic":{"data":"/org/bluez/hci0/dev_TEST/service004/char004"}}}}]}' | jq --arg scenario "$scenario" '
+        if $scenario == "multi_devices" then
+            .data[0] += (.data[0] | tojson | gsub("dev_TEST"; "dev_OTHER") | gsub("Test Board"; "Other Board") | fromjson)
+        else . end | .data[0]["/org/bluez/hci0/dev_TEST"]["org.bluez.Battery1"] = {Percentage: {data: 50}}'
     exit
 fi
 
